@@ -1,0 +1,21 @@
+# ========================================
+# Пример файла с переменными окружения
+# ========================================
+#
+# ИНСТРУКЦИЯ:
+# 1. Скопируйте этот файл и назовите копию ".env"
+# 2. Замените YOUR_API_KEY_HERE на ваш реальный API ключ
+# 3. Файл .env НЕ должен попадать в Git (он в .gitignore)
+#
+# Где получить API ключи:
+# - OpenAI: https://platform.openai.com/api-keys
+# - Anthropic: https://console.anthropic.com/settings/keys
+#
+# Примечание: Для работы обеих моделей используется единый ключ
+
+# API ключ (единый для OpenAI и Anthropic)
+AI_API_KEY=YOUR_API_KEY_HERE
+
+# Опционально: базовые URL для proxy или собственных серверов
+# OPENAI_BASE_URL=https://api.proxyapi.ru/openai/v1
+# ANTHROPIC_BASE_URL=https://api.proxyapi.ru/anthropic
