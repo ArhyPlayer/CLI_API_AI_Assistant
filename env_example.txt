@@ -10,11 +10,13 @@
 # Где получить API ключи:
 # - OpenAI: https://platform.openai.com/api-keys
 # - Anthropic: https://console.anthropic.com/settings/keys
+# - Telegram Bot: https://t.me/BotFather
 #
 # Примечание: Для работы обеих моделей используется единый ключ
 
-# API ключ (единый для OpenAI и Anthropic)
-AI_API_KEY=YOUR_API_KEY_HERE
+# API ключи
+OPENAI_API_KEY=YOUR_API_KEY_HERE
+BOT_TOKEN=YOUR_BOT_TOKEN_HERE
 
 # Опционально: базовые URL для proxy или собственных серверов
 # OPENAI_BASE_URL=https://api.proxyapi.ru/openai/v1

@@ -139,3 +139,7 @@ temp_*.py
 debug_*.py
 *.log.txt
 
+# Bot specific files
+user_contexts.json
+bot.log
+
