@@ -20,6 +20,9 @@ class ChatAI:
         api_key: Optional[str] = None,
         model: str = "gpt-3.5-turbo",
         provider: str = "openai",
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
+        system_message: Optional[str] = None,
     ):
         """
         Инициализация чат-бота.
@@ -28,10 +31,15 @@ class ChatAI:
             api_key: API ключ OpenAI/Anthropic. Если не указан, берется из переменных окружения.
             model: Модель для использования (по умолчанию gpt-3.5-turbo)
             provider: "openai" (обычная) или "anthropic" (думающая)
+            temperature: Температура генерации (0.0 - 1.0)
+            max_tokens: Максимальное количество токенов в ответе
+            system_message: Системное сообщение (опционально)
         """
         self.provider = provider
         self.model = model
-        self.system_prompt: Optional[str] = None
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.system_prompt: Optional[str] = system_message
         self.messages: List[Dict[str, str]] = []
         self.last_thinking_text: Optional[str] = None
 
@@ -118,6 +126,9 @@ class ChatAI:
             # Добавляем ответ AI в историю
             self.add_message("assistant", ai_response)
 
+            # Выводим информацию о запросе
+            self._print_request_info(response)
+
             return ai_response
 
         except Exception as e:
@@ -142,6 +153,41 @@ class ChatAI:
             Список сообщений в формате [{"role": "user", "content": "text"}, ...]
         """
         return self.messages.copy()
+
+    def _print_request_info(self, response) -> None:
+        """Выводит информацию о выполненном запросе."""
+        try:
+            if self.provider == "anthropic":
+                # Для Anthropic получаем информацию об использованных токенах
+                usage = getattr(response, 'usage', None)
+                if usage:
+                    tokens_used = getattr(usage, 'output_tokens', 0)
+                else:
+                    tokens_used = "неизвестно"
+            else:
+                # Для OpenAI получаем информацию об использованных токенах
+                usage = getattr(response, 'usage', None)
+                if usage:
+                    tokens_used = getattr(usage, 'total_tokens', 0)
+                else:
+                    tokens_used = "неизвестно"
+
+            print("\n" + "="*60)
+            print("📊 ИНФОРМАЦИЯ О ЗАПРОСЕ:")
+            print(f"   Модель: {self.model}")
+            print(f"   Температура: {self.temperature}")
+            print(f"   Max tokens: {self.max_tokens}")
+            print(f"   Использовано токенов: {tokens_used}")
+            print("="*60 + "\n")
+        except Exception as e:
+            # В случае ошибки выводим информацию без токенов
+            print("\n" + "="*60)
+            print("📊 ИНФОРМАЦИЯ О ЗАПРОСЕ:")
+            print(f"   Модель: {self.model}")
+            print(f"   Температура: {self.temperature}")
+            print(f"   Max tokens: {self.max_tokens}")
+            print("   Использовано токенов: неизвестно")
+            print("="*60 + "\n")
 
     def set_system_prompt(self, prompt: str) -> None:
         """
@@ -169,8 +215,8 @@ class ChatAI:
         return self.openai_client.chat.completions.create(
             model=self.model,
             messages=self._openai_messages(),
-            temperature=0.7,
-            max_completion_tokens=1000,
+            temperature=self.temperature,
+            max_completion_tokens=self.max_tokens,
         )
 
     def _anthropic_messages(self) -> List[Dict[str, object]]:
@@ -197,7 +243,7 @@ class ChatAI:
         # Для моделей с расширенным мышлением включаем thinking
         params = {
             "model": self.model,
-            "max_tokens": 2000,
+            "max_tokens": self.max_tokens,
             "messages": self._anthropic_messages(),
         }
         
@@ -233,13 +279,68 @@ def main():
             model = "gpt-3.5-turbo"
             print("\nРежим: обычная модель OpenAI")
 
-        chat = ChatAI(provider=provider, model=model)
+        # Запрашиваем параметры у пользователя
+        print("\nНастройка параметров для модели:")
 
-        # Устанавливаем системный промпт
-        system_prompt = "Ты - полезный помощник. Отвечай кратко и по делу."
-        chat.set_system_prompt(system_prompt)
+        # Запрос для модели
+        user_query = input("Введите запрос для модели: ").strip()
+        if not user_query:
+            user_query = "Привет! Расскажи о себе."
 
-        print("\nНачните диалог с ИИ.")
+        # Температура
+        while True:
+            try:
+                temp_input = input("Температура (0.0-1.0, по умолчанию 0.7): ").strip()
+                temperature = float(temp_input) if temp_input else 0.7
+                if 0.0 <= temperature <= 1.0:
+                    break
+                else:
+                    print("Температура должна быть в диапазоне 0.0-1.0")
+            except ValueError:
+                print("Введите корректное число")
+
+        # Max tokens
+        while True:
+            try:
+                tokens_input = input("Max tokens (по умолчанию 1000): ").strip()
+                max_tokens = int(tokens_input) if tokens_input else 1000
+                if max_tokens > 0:
+                    break
+                else:
+                    print("Max tokens должен быть положительным числом")
+            except ValueError:
+                print("Введите корректное число")
+
+        # System message (опционально)
+        system_message = input("System message (опционально, Enter для пропуска): ").strip()
+        if not system_message:
+            system_message = None
+
+        chat = ChatAI(
+            provider=provider,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system_message=system_message
+        )
+
+        # Отправляем первый запрос
+        print("\nОтправка первого запроса...")
+        print()  # Пустая строка перед отправкой
+        response = chat.send_message(user_query)
+
+        if chat.provider == "anthropic" and chat.last_thinking_text:
+            print()  # Пустая строка после получения ответа
+            print(f"AI: Размышления: {chat.last_thinking_text}")
+            print()  # Отступ после размышлений
+            print(f"Ответ: {response}")
+        else:
+            print(f"AI: {response}")
+
+        print()  # Пустая строка перед разделителем
+        print("-" * 50)
+
+        print("\nПродолжите диалог с ИИ.")
         print("Команды:")
         print("  'exit'           - выход")
         print("  'switch claude'  - переключиться на Claude")
@@ -258,20 +359,132 @@ def main():
             if lower_input == "switch claude":
                 provider = "anthropic"
                 model = "claude-sonnet-4-5-20250929"
-                chat = ChatAI(provider=provider, model=model)
-                chat.set_system_prompt(system_prompt)
+                print("\nПереключение на Claude. Настройка параметров:")
+
+                # Запрос для модели
+                user_query = input("Введите запрос для модели: ").strip()
+                if not user_query:
+                    user_query = "Привет! Расскажи о себе."
+
+                # Температура
+                while True:
+                    try:
+                        temp_input = input("Температура (0.0-1.0, по умолчанию 0.7): ").strip()
+                        temperature = float(temp_input) if temp_input else 0.7
+                        if 0.0 <= temperature <= 1.0:
+                            break
+                        else:
+                            print("Температура должна быть в диапазоне 0.0-1.0")
+                    except ValueError:
+                        print("Введите корректное число")
+
+                # Max tokens
+                while True:
+                    try:
+                        tokens_input = input("Max tokens (по умолчанию 1000): ").strip()
+                        max_tokens = int(tokens_input) if tokens_input else 1000
+                        if max_tokens > 0:
+                            break
+                        else:
+                            print("Max tokens должен быть положительным числом")
+                    except ValueError:
+                        print("Введите корректное число")
+
+                # System message (опционально)
+                system_message = input("System message (опционально, Enter для пропуска): ").strip()
+                if not system_message:
+                    system_message = None
+
+                chat = ChatAI(
+                    provider=provider,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    system_message=system_message
+                )
                 print("\nПереключено на Claude (claude-sonnet-4-5-20250929). История сброшена.")
                 print("-" * 50)
                 print()
+
+                # Отправляем первый запрос
+                print()  # Пустая строка перед отправкой
+                response = chat.send_message(user_query)
+
+                if chat.provider == "anthropic" and chat.last_thinking_text:
+                    print()  # Пустая строка после получения ответа
+                    print(f"AI: Размышления: {chat.last_thinking_text}")
+                    print()  # Отступ после размышлений
+                    print(f"Ответ: {response}")
+                else:
+                    print(f"AI: {response}")
+
+                print()  # Пустая строка перед разделителем
+                print("-" * 50)
                 continue
             if lower_input == "switch openai":
                 provider = "openai"
                 model = "gpt-3.5-turbo"
-                chat = ChatAI(provider=provider, model=model)
-                chat.set_system_prompt(system_prompt)
+                print("\nПереключение на OpenAI. Настройка параметров:")
+
+                # Запрос для модели
+                user_query = input("Введите запрос для модели: ").strip()
+                if not user_query:
+                    user_query = "Привет! Расскажи о себе."
+
+                # Температура
+                while True:
+                    try:
+                        temp_input = input("Температура (0.0-1.0, по умолчанию 0.7): ").strip()
+                        temperature = float(temp_input) if temp_input else 0.7
+                        if 0.0 <= temperature <= 1.0:
+                            break
+                        else:
+                            print("Температура должна быть в диапазоне 0.0-1.0")
+                    except ValueError:
+                        print("Введите корректное число")
+
+                # Max tokens
+                while True:
+                    try:
+                        tokens_input = input("Max tokens (по умолчанию 1000): ").strip()
+                        max_tokens = int(tokens_input) if tokens_input else 1000
+                        if max_tokens > 0:
+                            break
+                        else:
+                            print("Max tokens должен быть положительным числом")
+                    except ValueError:
+                        print("Введите корректное число")
+
+                # System message (опционально)
+                system_message = input("System message (опционально, Enter для пропуска): ").strip()
+                if not system_message:
+                    system_message = None
+
+                chat = ChatAI(
+                    provider=provider,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    system_message=system_message
+                )
                 print("\nПереключено на OpenAI (gpt-3.5-turbo). История сброшена.")
                 print("-" * 50)
                 print()
+
+                # Отправляем первый запрос
+                print()  # Пустая строка перед отправкой
+                response = chat.send_message(user_query)
+
+                if chat.provider == "anthropic" and chat.last_thinking_text:
+                    print()  # Пустая строка после получения ответа
+                    print(f"AI: Размышления: {chat.last_thinking_text}")
+                    print()  # Отступ после размышлений
+                    print(f"Ответ: {response}")
+                else:
+                    print(f"AI: {response}")
+
+                print()  # Пустая строка перед разделителем
+                print("-" * 50)
                 continue
             if lower_input == "model info":
                 print(f"\nТекущий провайдер: {provider}, модель: {model}")
