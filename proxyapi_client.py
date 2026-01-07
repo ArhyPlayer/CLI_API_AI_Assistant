@@ -9,9 +9,9 @@ from openai import OpenAI
 load_dotenv()
 
 
-class ChatAI:
+class ProxyAPIClient:
     """
-    Класс для работы с OpenAI Chat Completions API и думающей моделью Anthropic.
+    Класс для работы с OpenAI Chat Completions API и думающей моделью Anthropic через proxyapi.
     Поддерживает сохранение контекста разговора.
     """
 
@@ -20,29 +20,35 @@ class ChatAI:
         api_key: Optional[str] = None,
         model: str = "gpt-3.5-turbo",
         provider: str = "openai",
+        temperature: float = 0.7,
+        max_tokens: int = 1000,
     ):
         """
-        Инициализация чат-бота.
+        Инициализация клиента для работы с proxyapi.
 
         Args:
             api_key: API ключ OpenAI/Anthropic. Если не указан, берется из переменных окружения.
             model: Модель для использования (по умолчанию gpt-3.5-turbo)
             provider: "openai" (обычная) или "anthropic" (думающая)
+            temperature: Температура генерации (0.0-1.0)
+            max_tokens: Максимальное количество токенов в ответе
         """
         self.provider = provider
         self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
         self.system_prompt: Optional[str] = None
         self.messages: List[Dict[str, str]] = []
         self.last_thinking_text: Optional[str] = None
 
         # Ключи
-        openai_key = api_key or os.getenv("AI_API_KEY")
-        anthropic_key = api_key or os.getenv("AI_API_KEY")
+        openai_key = api_key or os.getenv("OPENAI_API_KEY")
+        anthropic_key = api_key or os.getenv("OPENAI_API_KEY")
 
         # Клиенты
         if provider == "anthropic":
             if not anthropic_key:
-                raise ValueError("API ключ Anthropic не найден. Установите AI_API_KEY или передайте api_key.")
+                raise ValueError("API ключ Anthropic не найден. Установите OPENAI_API_KEY или передайте api_key.")
             self.anthropic_client = anthropic.Anthropic(
                 api_key=anthropic_key,
                 base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.proxyapi.ru/anthropic"),
@@ -51,7 +57,7 @@ class ChatAI:
             self.openai_client = None
         else:
             if not openai_key:
-                raise ValueError("API ключ OpenAI не найден. Укажите его в конструкторе или установите AI_API_KEY.")
+                raise ValueError("API ключ OpenAI не найден. Укажите его в конструкторе или установите OPENAI_API_KEY.")
             self.openai_client = OpenAI(
                 api_key=openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", "https://api.proxyapi.ru/openai/v1"),
@@ -68,7 +74,7 @@ class ChatAI:
         """
         self.messages.append({"role": role, "content": content})
 
-    def send_message(self, message: str, system_prompt: Optional[str] = None) -> str:
+    def send_message(self, message: str, system_prompt: Optional[str] = None) -> tuple[str, int]:
         """
         Отправляет сообщение и получает ответ от AI с сохранением контекста.
 
@@ -77,7 +83,7 @@ class ChatAI:
             system_prompt: Системный промпт (используется только при первом сообщении)
 
         Returns:
-            Ответ от AI
+            Кортеж (ответ от AI, количество использованных токенов)
         """
         # Устанавливаем системный промпт, если передан
         if system_prompt and not self.system_prompt:
@@ -88,14 +94,12 @@ class ChatAI:
 
         try:
             if self.provider == "anthropic":
-                print("... отправляю запрос в Claude, подождите")
-                print()  # Отступ после уведомления
                 response = self._send_anthropic()
-                
+
                 # Извлекаем размышления и текстовый ответ
                 thinking_blocks = []
                 text_blocks = []
-                
+
                 for block in response.content:
                     if hasattr(block, 'type'):
                         if block.type == "thinking":
@@ -103,32 +107,86 @@ class ChatAI:
                             thinking_blocks.append(block.thinking)
                         elif block.type == "text":
                             text_blocks.append(block.text)
-                
+
                 self.last_thinking_text = "\n".join(thinking_blocks) if thinking_blocks else None
                 ai_response = "".join(text_blocks)
-                
+
                 if not ai_response:
                     ai_response = "⚠️ Получен пустой ответ от Claude"
-                    
+
+                # Получаем количество использованных токенов для Anthropic
+                print(f"DEBUG: Anthropic response type: {type(response)}")
+                print(f"DEBUG: Anthropic response dir: {[attr for attr in dir(response) if not attr.startswith('_')]}")
+                usage = getattr(response, 'usage', None)
+                print(f"DEBUG: Anthropic usage object: {usage}")
+                tokens_used = 0
+                if usage:
+                    print(f"DEBUG: Anthropic usage dir: {[attr for attr in dir(usage) if not attr.startswith('_')]}")
+                    # Пробуем разные поля для токенов
+                    output_tokens = getattr(usage, 'output_tokens', 0)
+                    total_tokens = getattr(usage, 'total_tokens', 0)
+                    input_tokens = getattr(usage, 'input_tokens', 0)
+                    print(f"DEBUG: Anthropic usage fields - output: {output_tokens}, total: {total_tokens}, input: {input_tokens}")
+
+                    tokens_used = output_tokens or total_tokens or (input_tokens + output_tokens)
+                    print(f"DEBUG: Anthropic calculated tokens: {tokens_used}")
+
+                # Всегда используем оценку, если токены не найдены из API
+                if tokens_used == 0 and ai_response:
+                    # Более точная оценка для Anthropic (обычно 1 токен = ~4 символа)
+                    tokens_used = max(1, len(ai_response) // 4)
+                    print(f"DEBUG: Anthropic tokens estimated: {tokens_used} (from {len(ai_response)} chars)")
+                elif tokens_used == 0:
+                    # Если даже ответа нет, используем минимальное значение
+                    tokens_used = 1
+                    print(f"DEBUG: Anthropic tokens set to minimum: {tokens_used}")
+
             else:
                 response = self._send_openai()
                 self.last_thinking_text = None
                 ai_response = response.choices[0].message.content
 
+                # Получаем количество использованных токенов для OpenAI
+                print(f"DEBUG: OpenAI response type: {type(response)}")
+                print(f"DEBUG: OpenAI response dir: {[attr for attr in dir(response) if not attr.startswith('_')]}")
+                usage = getattr(response, 'usage', None)
+                print(f"DEBUG: OpenAI usage object: {usage}")
+                tokens_used = 0
+                if usage:
+                    print(f"DEBUG: OpenAI usage dir: {[attr for attr in dir(usage) if not attr.startswith('_')]}")
+                    total_tokens = getattr(usage, 'total_tokens', 0)
+                    completion_tokens = getattr(usage, 'completion_tokens', 0)
+                    prompt_tokens = getattr(usage, 'prompt_tokens', 0)
+                    print(f"DEBUG: OpenAI usage fields - total: {total_tokens}, completion: {completion_tokens}, prompt: {prompt_tokens}")
+
+                    tokens_used = total_tokens or completion_tokens or (prompt_tokens + completion_tokens)
+                    print(f"DEBUG: OpenAI calculated tokens: {tokens_used}")
+
+                # Всегда используем оценку, если токены не найдены из API
+                if tokens_used == 0 and ai_response:
+                    # OpenAI токены: примерно 1 токен = 0.75 слова или 4 символа
+                    tokens_used = max(1, len(ai_response) // 4)
+                    print(f"DEBUG: OpenAI tokens estimated: {tokens_used} (from {len(ai_response)} chars)")
+                elif tokens_used == 0:
+                    # Если даже ответа нет, используем минимальное значение
+                    tokens_used = 1
+                    print(f"DEBUG: OpenAI tokens set to minimum: {tokens_used}")
+
             # Добавляем ответ AI в историю
             self.add_message("assistant", ai_response)
 
-            return ai_response
+            # Гарантируем что tokens_used это int и минимум 1
+            tokens_used = max(1, int(tokens_used))
+            print(f"🔍 FINAL: Returning tokens_used = {tokens_used} (type: {type(tokens_used)})")
+
+            return ai_response, tokens_used
 
         except Exception as e:
-            import traceback
             error_msg = f"Ошибка при обращении к API ({self.provider}): {str(e)}"
-            print(error_msg)
-            print(f"Детали ошибки:\n{traceback.format_exc()}")
             # Удаляем последнее сообщение пользователя, так как запрос не выполнен
             if self.messages and self.messages[-1]["role"] == "user":
                 self.messages.pop()
-            return error_msg
+            return error_msg, 0
 
     def clear_history(self) -> None:
         """Очищает историю сообщений."""
@@ -169,8 +227,8 @@ class ChatAI:
         return self.openai_client.chat.completions.create(
             model=self.model,
             messages=self._openai_messages(),
-            temperature=0.7,
-            max_completion_tokens=1000,
+            temperature=self.temperature,
+            max_completion_tokens=self.max_tokens,
         )
 
     def _anthropic_messages(self) -> List[Dict[str, object]]:
@@ -197,113 +255,29 @@ class ChatAI:
         # Для моделей с расширенным мышлением включаем thinking
         params = {
             "model": self.model,
-            "max_tokens": 2000,
+            "max_tokens": self.max_tokens,
             "messages": self._anthropic_messages(),
         }
-        
+
         # Добавляем системный промпт, если он есть
         if self.system_prompt:
             params["system"] = self.system_prompt
-            
+
         # Для Sonnet 4.5 включаем extended thinking
         if "sonnet-4-5" in self.model or "sonnet-4.5" in self.model:
-            params["thinking"] = {"type": "enabled", "budget_tokens": 1024}
-        
-        print(f"Отправка запроса с параметрами: model={params['model']}, max_tokens={params['max_tokens']}")
-        print()  # Отступ после параметров
-        return self.anthropic_client.messages.create(**params)
-
-
-def main():
-    """
-    Пример использования ChatAI для демонстрации работы в режиме диалога.
-    """
-    try:
-        print("Выберите режим работы:")
-        print("1 - Обычная модель OpenAI (gpt-3.5-turbo) [по умолчанию]")
-        print("2 - Думающая модель Anthropic (claude-sonnet-4-5-20250929)")
-        mode = input("Введите 1 или 2 (Enter = 1): ").strip()
-
-        if mode == "2":
-            provider = "anthropic"
-            model = "claude-sonnet-4-5-20250929"
-            print("\nРежим: думающая модель Anthropic")
-        else:
-            provider = "openai"
-            model = "gpt-3.5-turbo"
-            print("\nРежим: обычная модель OpenAI")
-
-        chat = ChatAI(provider=provider, model=model)
-
-        # Устанавливаем системный промпт
-        system_prompt = "Ты - полезный помощник. Отвечай кратко и по делу."
-        chat.set_system_prompt(system_prompt)
-
-        print("\nНачните диалог с ИИ.")
-        print("Команды:")
-        print("  'exit'           - выход")
-        print("  'switch claude'  - переключиться на Claude")
-        print("  'switch openai'  - переключиться на OpenAI")
-        print("  'model info'     - информация о текущей модели")
-        print("  'clear'          - очистить историю")
-        print("-" * 50)
-        print()  # Отступ перед началом диалога
-
-        while True:
-            user_input = input("Вы: ").strip()
-            lower_input = user_input.lower()
-
-            if lower_input == "exit":
-                break
-            if lower_input == "switch claude":
-                provider = "anthropic"
-                model = "claude-sonnet-4-5-20250929"
-                chat = ChatAI(provider=provider, model=model)
-                chat.set_system_prompt(system_prompt)
-                print("\nПереключено на Claude (claude-sonnet-4-5-20250929). История сброшена.")
-                print("-" * 50)
-                print()
-                continue
-            if lower_input == "switch openai":
-                provider = "openai"
-                model = "gpt-3.5-turbo"
-                chat = ChatAI(provider=provider, model=model)
-                chat.set_system_prompt(system_prompt)
-                print("\nПереключено на OpenAI (gpt-3.5-turbo). История сброшена.")
-                print("-" * 50)
-                print()
-                continue
-            if lower_input == "model info":
-                print(f"\nТекущий провайдер: {provider}, модель: {model}")
-                print("-" * 50)
-                print()
-                continue
-            if lower_input == "clear":
-                chat.clear_history()
-                print("\nИстория очищена.")
-                print("-" * 50)
-                print()
-                continue
-
-            # Отправляем обычное сообщение
-            print()  # Пустая строка перед отправкой
-            response = chat.send_message(user_input)
-            
-            if chat.provider == "anthropic" and chat.last_thinking_text:
-                print()  # Пустая строка после получения ответа
-                print(f"AI: Размышления: {chat.last_thinking_text}")
-                print()  # Отступ после размышлений
-                print(f"Ответ: {response}")
+            # Убеждаемся что max_tokens достаточно для thinking
+            # budget_tokens должен быть меньше max_tokens
+            # Оставляем минимум 512 токенов для ответа
+            if self.max_tokens < 1536:  # Минимум для thinking (1024) + ответ (512)
+                # Увеличиваем max_tokens до минимально необходимого
+                params["max_tokens"] = 2048
+                budget_tokens = 1024
+                print(f"⚠️ ANTHROPIC: max_tokens увеличен до {params['max_tokens']} для extended thinking")
             else:
-                print(f"AI: {response}")
+                # Используем 2/3 от max_tokens для thinking, 1/3 для ответа
+                budget_tokens = min(1024, int(self.max_tokens * 0.66))
+                print(f"ℹ️ ANTHROPIC: budget_tokens установлен в {budget_tokens} (max_tokens: {self.max_tokens})")
             
-            print()  # Пустая строка перед разделителем
-            print("-" * 50)
+            params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
 
-    except ValueError as e:
-        print(f"Ошибка инициализации: {e}")
-        print("Установите переменную окружения AI_API_KEY или передайте api_key в конструктор ChatAI")
-
-
-if __name__ == "__main__":
-    main()
+        return self.anthropic_client.messages.create(**params)
